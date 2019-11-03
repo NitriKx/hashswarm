@@ -109,13 +109,18 @@ Resources:
         - ServerSideEncryptionByDefault:
             SSEAlgorithm: AES256
 
+  HashSwarmAMIInstallationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /hashswarm/amifactory
+      RetentionInDays: 7
 
   ImageCreationAutomation:
     Type: AWS::SSM::Document
     Properties:
       DocumentType: Automation
       Content:
-        description: This automation document triggers Golden AMI creation workflow.
+        description: HashSwarm AMI building automation
         schemaVersion: '0.3'
         assumeRole:
           Fn::GetAtt:
@@ -159,8 +164,7 @@ Resources:
         - name: StartInstances
           action: aws:runInstances
           timeoutSeconds: 300
-          maxAttempts: 1
-          onFailure: Abort
+          onFailure: step:TerminateInstance
           inputs:
             ImageId: "{{ SourceAmiId }}"
             InstanceType: "{{InstanceType}}"
@@ -176,20 +180,23 @@ Resources:
         - name: PrepareInstance
           action: aws:runCommand
           timeoutSeconds: 300
-          maxAttempts: 1
+          onFailure: step:TerminateInstance
           inputs:
             DocumentName: AWS-RunShellScript
             InstanceIds:
             - "{{ StartInstances.InstanceIds }}"
             Parameters:
               commands:
-              - yum update
+              - yum update -y
+            CloudWatchOutputConfig:
+              CloudWatchOutputEnabled: true
+              CloudWatchLogGroupName: !Ref HashSwarmAMIInstallationLogGroup
+
 
         - name: InstallHashSwarm
           action: aws:runCommand
           timeoutSeconds: 300
-          maxAttempts: 1
-          onFailure: Abort
+          onFailure: step:TerminateInstance
           inputs:
             DocumentName: AWS-RunShellScript
             InstanceIds:
@@ -198,17 +205,19 @@ Resources:
               workingDirectory: /tmp
               commands:
               - 'mkdir -p /var/log/hashswarm/'
-              - 'mkdir -p /opt/hashswarm/ '
-              - 'date > /var/log/hashswarm/install.log'
-              - 'aws s3 sync "s3://{{ HashSwarmArtifactsBucketName }}/latest/src/worker/" "/opt/hashswarm/" 2>&1 >> /var/log/hashswarm/install.log'
-              - 'cd /opt/hashswarm/'
-              - 'bash /opt/hashswarm/install.sh 2>&1 >> /var/log/hashswarm/install.log'
+              - 'mkdir -p /opt/hashswarm/'
+              - 'date | tee /var/log/hashswarm/install.log'
+              - 'aws s3 sync "s3://{{ HashSwarmArtifactsBucketName }}/latest/src/worker/" "/opt/hashswarm/" 2>&1 | tee -a /var/log/hashswarm/install.log'
+              - 'cd /opt/hashswarm/ 2>&1 | tee -a /var/log/hashswarm/install.log'
+              - 'bash /opt/hashswarm/install.sh 2>&1 | tee -a /var/log/hashswarm/install.log'
+            CloudWatchOutputConfig:
+              CloudWatchOutputEnabled: true
+              CloudWatchLogGroupName: !Ref HashSwarmAMIInstallationLogGroup
 
         - name: InstallCloudWatchAgent
           action: aws:runCommand
           timeoutSeconds: 300
-          maxAttempts: 1
-          onFailure: Abort
+          onFailure: step:TerminateInstance
           inputs:
             DocumentName: AWS-ConfigureAWSPackage
             InstanceIds:
@@ -216,12 +225,14 @@ Resources:
             Parameters:
               action: Install
               name: AmazonCloudWatchAgent
+            CloudWatchOutputConfig:
+              CloudWatchOutputEnabled: true
+              CloudWatchLogGroupName: !Ref HashSwarmAMIInstallationLogGroup
 
         - name: StopInstance
           action: aws:changeInstanceState
-          timeoutSeconds: 120
-          maxAttempts: 1
-          onFailure: Abort
+          timeoutSeconds: 300
+          onFailure: step:TerminateInstance
           inputs:
             InstanceIds:
             - "{{ StartInstances.InstanceIds }}"
@@ -229,9 +240,8 @@ Resources:
 
         - name: CreateImage
           action: aws:createImage
-          timeoutSeconds: 120
-          maxAttempts: 1
-          onFailure: Continue
+          timeoutSeconds: 300
+          onFailure: step:TerminateInstance
           inputs:
             InstanceId: "{{ StartInstances.InstanceIds }}"
             ImageName: "{{ TargetAMIname }}"
@@ -240,9 +250,8 @@ Resources:
 
         - name: Tag
           action: aws:createTags
-          timeoutSeconds: 120
-          maxAttempts: 1
-          onFailure: Continue
+          timeoutSeconds: 300
+          onFailure: step:TerminateInstance
           inputs:
             ResourceType: EC2
             ResourceIds:
@@ -255,9 +264,8 @@ Resources:
 
         - name: TerminateInstance
           action: aws:changeInstanceState
-          timeoutSeconds: 120
-          maxAttempts: 1
-          onFailure: Continue
+          timeoutSeconds: 300
+          onFailure: Abort
           inputs:
             InstanceIds:
             - "{{ StartInstances.InstanceIds }}"
