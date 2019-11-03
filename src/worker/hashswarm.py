@@ -17,8 +17,7 @@ logger = logging.getLogger('main')
 logger.setLevel(logging.INFO)
 
 
-session = boto3.session()
-sqs = session.client('sqs')
+sqs = boto3.client('sqs')
 
 
 class HashSwarmWrapper:
@@ -39,7 +38,7 @@ class HashSwarmWrapper:
                 AttributeNames=['SentTimestamp'],
                 MaxNumberOfMessages=1,
                 MessageAttributeNames=['All'],
-                WaitTimeSeconds=60
+                WaitTimeSeconds=20
             )
 
             if response['Messages'] and len(response['Messages']) > 0:
