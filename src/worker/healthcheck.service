@@ -1,0 +1,12 @@
+[Unit]
+Description=HashSwarm Healthcheck server
+Requires=hashswarm.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+ExecStart=/usr/bin/python3 /opt/hashswarm/healthcheck.py
+
+[Install]
+WantedBy=multi-user.target

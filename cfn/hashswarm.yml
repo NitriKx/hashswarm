@@ -1,0 +1,145 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "HashSwarm"
+Parameters:
+
+  Image:
+    Type: String
+    Description: "The HashSwarm AMI"
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Descirption: "The subnet id where the instance is going to be deployed (should have access to internet)"
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Descirption: "The security group id that is going to be associated to the instance"
+
+Resources:
+
+  HashSwarmLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /hashswarm
+      RetentionInDays: 10
+
+
+  CloudWatchAgentConfigurationParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /hashswarm/config/cloudwatch
+      Description: CloudWatchAgent configuration in HashSwarm workers
+      Type: String
+      Value: !Sub >
+          {
+              "agent": {
+                  "metrics_collection_interval": 10,
+                  "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
+              },
+              "metrics": {
+                  "metrics_collected": {
+                      "cpu": {
+                          "resources": [
+                              "*"
+                          ],
+                          "measurement": [
+                              {
+                                  "name": "cpu_usage_idle",
+                                  "rename": "CPU_USAGE_IDLE",
+                                  "unit": "Percent"
+                              },
+                              {
+                                  "name": "cpu_usage_nice",
+                                  "unit": "Percent"
+                              },
+                              "cpu_usage_guest"
+                          ],
+                          "totalcpu": false,
+                          "metrics_collection_interval": 60
+                      },
+                      "disk": {
+                          "resources": [
+                              "/",
+                              "/tmp"
+                          ],
+                          "measurement": [
+                              {
+                                  "name": "free",
+                                  "rename": "DISK_FREE",
+                                  "unit": "Gigabytes"
+                              },
+                              "total",
+                              "used"
+                          ],
+                          "ignore_file_system_types": [
+                              "sysfs",
+                              "devtmpfs"
+                          ],
+                          "metrics_collection_interval": 60
+                      },
+                      "diskio": {
+                          "resources": [
+                              "*"
+                          ],
+                          "measurement": [
+                              "reads",
+                              "writes",
+                              "read_time",
+                              "write_time",
+                              "io_time"
+                          ],
+                          "metrics_collection_interval": 60
+                      },
+                      "mem": {
+                          "measurement": [
+                              "mem_used",
+                              "mem_cached",
+                              "mem_total"
+                          ],
+                          "metrics_collection_interval": 60
+                      },
+                      "net": {
+                          "resources": [
+                              "eth0"
+                          ],
+                          "measurement": [
+                              "bytes_sent",
+                              "bytes_recv",
+                              "drop_in",
+                              "drop_out"
+                          ]
+                      },
+                      "processes": {
+                          "measurement": [
+                              "running",
+                              "sleeping",
+                              "dead"
+                          ]
+                      }
+                  },
+                  "append_dimensions": {
+                      "InstanceId": "${aws:InstanceId}",
+                      "InstanceType": "${aws:InstanceType}",
+                      "AutoScalingGroupName": "${aws:AutoScalingGroupName}"
+                  },
+                  "aggregation_dimensions": [
+                      [
+                          "AutoScalingGroupName"
+                      ]
+                  ],
+                  "force_flush_interval": 30
+              },
+              "logs": {
+                  "logs_collected": {
+                      "files": {
+                          "collect_list": [
+                              {
+                                  "file_path": "/var/log/hashswarm/hashswarm.log",
+                                  "log_group_name": "/hashswarm",
+                                  "timezone": "UTC"
+                              }
+                          ]
+                      }
+                  },
+                  "force_flush_interval": 15
+              }
+          }

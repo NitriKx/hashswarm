@@ -1,0 +1,270 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "HashSwarm AMI factory"
+Parameters:
+  AMIBuildingArtifactsStorageBucketName:
+    Type: String
+    Description: "The name of the bucket that contains the files that should be installed in the AMI"
+    Default: "hashswarm-amifactory"
+
+  BaseImage:
+    Type: String
+    Description: "The ID of the base AMI that is going to be used (Deep Learning Base AMI (Amazon Linux 2))"
+    Default: "ami-0138596f81a20abf5"
+
+  InstanceType:
+    Type: String
+    Description: "The instance type that will be used to build the AMI"
+    Default: "t2.medium"
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: "The subnet id where the instance is going to be deployed (should have access to internet)"
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "The security group id that is going to be associated to the instance"
+
+Resources:
+
+  ManagedInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Path: "/"
+      Policies:
+      - PolicyName: AllowToDownloadArtifacts
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            Action:
+            - s3:Get*
+            - s3:List*
+            Effect: Allow
+            Resource:
+            - !Sub 'arn:aws:s3:::${AMIBuildingArtifactsStorageBucket}'
+            - !Sub 'arn:aws:s3:::${AMIBuildingArtifactsStorageBucket}/*'
+      - PolicyName: AllowToGetCloudWatchAgentConfiguration
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            Effect: Allow
+            Action:
+            - ssm:GetParameters
+            Resource:
+            - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hashswarm/*'
+
+  ManagedInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: ManagedInstanceRole
+
+  AutomationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonSSMAutomationRole
+      Path: "/"
+      Policies:
+      - PolicyName: passrole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - iam:PassRole
+            Resource:
+            - Fn::GetAtt:
+              - ManagedInstanceRole
+              - Arn
+
+  AMIBuildingArtifactsStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref AMIBuildingArtifactsStorageBucketName
+      VersioningConfiguration:
+          Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+
+
+  ImageCreationAutomation:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Automation
+      Content:
+        description: This automation document triggers Golden AMI creation workflow.
+        schemaVersion: '0.3'
+        assumeRole:
+          Fn::GetAtt:
+          - AutomationServiceRole
+          - Arn
+        parameters:
+          SourceAmiId:
+            type: String
+            description: Source/Base AMI to be used for generating your golden AMI
+            default: !Ref BaseImage
+          AMIVersion:
+            type: String
+            description: Golden AMI Build version number to be created.
+            default: "{{ global:DATE }}"
+          SubnetId:
+            type: String
+            default: !Ref SubnetId
+            description: Subnet in which instances will be launched.
+          SecurityGroupId:
+            type: String
+            default: !Ref SecurityGroupId
+            description: Security Group that will be attached to the instance. By Default a security group without any inbound access is attached
+          InstanceType:
+            type: String
+            description: A compatible instance-type for launching an instance
+            default: !Ref InstanceType
+          TargetAMIname:
+            type: String
+            description: Name for the golden AMI to be created
+            default: "hashswarm-tesladrivers-{{ AMIVersion }}"
+          HashSwarmArtifactsBucketName:
+            type: String
+            description: The name of the S3 bucket that contains the HashSwarm artifacts
+            default: !Ref AMIBuildingArtifactsStorageBucketName
+          ManagedInstanceProfile:
+            type: String
+            description: Instance Profile. Do not change the default value.
+            default: !Ref ManagedInstanceProfile
+
+        mainSteps:
+        - name: StartInstances
+          action: aws:runInstances
+          timeoutSeconds: 300
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            ImageId: "{{ SourceAmiId }}"
+            InstanceType: "{{InstanceType}}"
+            MinInstanceCount: 1
+            MaxInstanceCount: 1
+            SubnetId: "{{ SubnetId }}"
+            SecurityGroupIds:
+            - "{{ SecurityGroupId }}"
+            IamInstanceProfileName: "{{ ManagedInstanceProfile }}"
+            UserData: !Base64 >
+              yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+
+        - name: PrepareInstance
+          action: aws:runCommand
+          timeoutSeconds: 300
+          maxAttempts: 1
+          inputs:
+            DocumentName: AWS-RunShellScript
+            InstanceIds:
+            - "{{ StartInstances.InstanceIds }}"
+            Parameters:
+              commands:
+              - yum update
+
+        - name: InstallHashSwarm
+          action: aws:runCommand
+          timeoutSeconds: 300
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-RunShellScript
+            InstanceIds:
+            - "{{ StartInstances.InstanceIds }}"
+            Parameters:
+              workingDirectory: /tmp
+              commands:
+              - 'mkdir -p /var/log/hashswarm/'
+              - 'mkdir -p /opt/hashswarm/ '
+              - 'date > /var/log/hashswarm/install.log'
+              - 'aws s3 sync "s3://{{ HashSwarmArtifactsBucketName }}/latest/src/worker/" "/opt/hashswarm/" 2>&1 >> /var/log/hashswarm/install.log'
+              - 'cd /opt/hashswarm/'
+              - 'bash /opt/hashswarm/install.sh 2>&1 >> /var/log/hashswarm/install.log'
+
+        - name: InstallCloudWatchAgent
+          action: aws:runCommand
+          timeoutSeconds: 300
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            DocumentName: AWS-ConfigureAWSPackage
+            InstanceIds:
+            - "{{ StartInstances.InstanceIds }}"
+            Parameters:
+              action: Install
+              name: AmazonCloudWatchAgent
+
+        - name: StopInstance
+          action: aws:changeInstanceState
+          timeoutSeconds: 120
+          maxAttempts: 1
+          onFailure: Abort
+          inputs:
+            InstanceIds:
+            - "{{ StartInstances.InstanceIds }}"
+            DesiredState: stopped
+
+        - name: CreateImage
+          action: aws:createImage
+          timeoutSeconds: 120
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            InstanceId: "{{ StartInstances.InstanceIds }}"
+            ImageName: "{{ TargetAMIname }}"
+            NoReboot: true
+            ImageDescription: HashSwarm AMI (distributed HashCat)
+
+        - name: Tag
+          action: aws:createTags
+          timeoutSeconds: 120
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            ResourceType: EC2
+            ResourceIds:
+            - "{{ CreateImage.ImageId }}"
+            Tags:
+            - Key: ProductName
+              Value: "HashSwarm"
+            - Key: Version
+              Value: "{{ AMIVersion }}"
+
+        - name: TerminateInstance
+          action: aws:changeInstanceState
+          timeoutSeconds: 120
+          maxAttempts: 1
+          onFailure: Continue
+          inputs:
+            InstanceIds:
+            - "{{ StartInstances.InstanceIds }}"
+            DesiredState: terminated
+        outputs:
+        - CreateImage.ImageId
+
+Outputs:
+  AMIBuildingAutomationName:
+    Value: !Ref ImageCreationAutomation

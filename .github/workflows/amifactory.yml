@@ -1,0 +1,35 @@
+name: CloudRIG AMI Factory
+
+on:
+  push:
+    paths:
+      - '.github/workflows/amifactory.yml'
+      - 'cfn/amifactory.yml'
+      - 'src/worker/*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions/setup-python@v1
+        with:
+          python-version: '3.7'
+          architecture: 'x64'
+      - name: Prepare
+        run: |
+          virtualenv '.venv'
+          source .venv/bin/activate
+          pip install -r dev-requirements.txt
+      - name: Test
+        run: |
+          source .venv/bin/activate
+          cfn-lint cfn/*
+      - name: Package
+        run: |
+          mkdir -p dist/
+          cp -r cfn dist/
+          cp -r src dist/
+      - name: Deploy
+        run: |
+          aws s3 sync --delete dist/ s3://hashswarm-amifactory/latest/
