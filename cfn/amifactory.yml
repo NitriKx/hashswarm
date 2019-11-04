@@ -134,7 +134,7 @@ Resources:
           AMIVersion:
             type: String
             description: Golden AMI Build version number to be created.
-            default: "{{ global:DATE }}"
+            default: "{{ global:DATE_TIME }}"
           SubnetId:
             type: String
             default: !Ref SubnetId
