@@ -14,7 +14,6 @@ REGION=$(curl --silent 'http://169.254.169.254/latest/dynamic/instance-identity/
 # Install hashcat
 (
     echo "Installing hashcat 5.1.0..."
-    mkdir -p "/opt/hashcat"
     cd "/opt/"
     wget "https://hashcat.net/files/hashcat-5.1.0.7z"
     7za x "hashcat-5.1.0.7z"
@@ -24,7 +23,7 @@ REGION=$(curl --silent 'http://169.254.169.254/latest/dynamic/instance-identity/
 
 # Install the python dependencies
 echo "Installing python dependencies..."
-cd /opt/hashswarm/src/worker/
+cd /opt/hashswarm/
 pip3 install -r requirements.txt
 
 # Install the services
