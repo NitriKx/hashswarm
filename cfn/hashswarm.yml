@@ -3,25 +3,134 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: "HashSwarm"
 Parameters:
 
-  Image:
+  HashSwarmAMIId:
     Type: String
     Description: "The HashSwarm AMI"
 
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Descirption: "The subnet id where the instance is going to be deployed (should have access to internet)"
+  InstanceType:
+    Type: String
+    Description: "The instance type that is going to be used to run hashcat"
+    Default: "p3.2xlarge"
+
+  SubnetsIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Descirption: "The list of subnet where the instances can be deployed"
   SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Descirption: "The security group id that is going to be associated to the instance"
 
 Resources:
 
+  JobDeadLetterQueue:
+    Type: AWS::SQS::Queue
+
+  JobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      VisibilityTimeout: 3600
+
+  JobFileStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        - ExpirationInDays: 3
+          Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+
+  HashSwarmWorkerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ssm.amazonaws.com
+            - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Path: "/"
+      Policies:
+      - PolicyName: AllowToDownloadJobFiles
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            Action:
+            - s3:Get*
+            - s3:List*
+            Effect: Allow
+            Resource:
+            - !Sub 'arn:aws:s3:::${JobFileStorageBucket}'
+            - !Sub 'arn:aws:s3:::${JobFileStorageBucket}/*'
+      - PolicyName: AllowToGetCloudWatchAgentConfiguration
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            Effect: Allow
+            Action:
+            - ssm:GetParameters
+            Resource:
+            - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hashswarm/*'
+
+  HashSwarmWorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: HashSwarmWorkerInstanceRole
+
+  InstanceTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: hashswarm-worker-template
+      LaunchTemplateData:
+        ImageId: !Ref HashSwarmAMIId
+        IamInstanceProfile:
+          Arn: !GetAtt HashSwarmWorkerInstanceProfile.Arn
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            InstanceInterruptionBehavior: "terminate"
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+        UserData: !Sub !Base64 |
+          {"HASHSWARM_QUEUE_URL": "${JobQueue}", "HASHSWARM_JOB_FILE_BUCKET": "${JobFileStorageBucket}"}
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: "0"
+      MinSize: "0"
+      MaxSize: "0"
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: lowest-price
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref InstanceTemplate
+      VPCZoneIdentifier: !Ref SubnetsIds
+
+
+
+
+
+
   HashSwarmLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /hashswarm
       RetentionInDays: 10
-
 
   CloudWatchAgentConfigurationParameter:
     Type: AWS::SSM::Parameter
